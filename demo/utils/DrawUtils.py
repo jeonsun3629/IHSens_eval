@@ -46,17 +46,17 @@ def draw_person_limbs_2d_coco(axis, coords, vis=None, color=None, order='hw', wi
                 axis.plot(coords[[p0, p1], 0], coords[[p0, p1], 1], color=color[lid, :], linewidth=2)
 
 
-def draw_person_limbs_3d_coco(axis, coords, vis=None, color=None, orientation=None, orientation_val=None, with_face=True, rescale=True, linewidth=2):
+def draw_person_limbs_3d_coco(axis, coords, bones ,vis=None, color=None, azim=-90, elev=-90, with_face=False, rescale=True, linewidth=2):
     """ Draws a 3d person stick figure in a matplotlib axis. """
 
     import matplotlib.cm
 
-    LIMBS_COCO = np.array([[1, 2], [2, 3], # head?
-                           [20, 8], [8, 9], [9, 10], # right arm
-                           [20, 4], [4, 5], [5, 6], # left arm
-                           [20, 16], [16, 17], [17, 18], [18,19], 
-                           # [1, 0],
-                           [20, 12], [12, 13], [13, 14], [14,15]])#,
+    # LIMBS_COCO = np.array([[1, 2], [2, 3], # head?
+    #                        [20, 8], [8, 9], [9, 10], # right arm
+    #                        [20, 4], [4, 5], [5, 6], # left arm
+    #                        [20, 16], [16, 17], [17, 18], [18,19], 
+    #                        # [1, 0],
+    #                        [20, 12], [12, 13], [13, 14], [14,15]])#,
 
                            
 
@@ -66,7 +66,9 @@ def draw_person_limbs_3d_coco(axis, coords, vis=None, color=None, orientation=No
     #                        [1, 11], [11, 12], [12, 13],
     #                        [1, 0],
     #                        [0, 14], [14, 16], [0, 15], [15, 17]])#,
-    #                        # [2, 16], [5, 17]])
+                           # [2, 16], [5, 17]])
+
+    LIMBS_COCO = bones
 
 
     if not with_face:
@@ -99,14 +101,14 @@ def draw_person_limbs_3d_coco(axis, coords, vis=None, color=None, orientation=No
     if np.sum(vis) > 0 and rescale:
         min_v, max_v, mean_v = np.min(coords[vis, :], 0), np.max(coords[vis, :], 0), np.mean(coords[vis, :], 0)
         range = np.max(np.maximum(np.abs(max_v-mean_v), np.abs(mean_v-min_v)))
-        axis.set_xlim([mean_v[0]-range, mean_v[0]+range])
-        axis.set_ylim([mean_v[1]-range, mean_v[1]+range])
-        axis.set_zlim([mean_v[2]-range, mean_v[2]+range])
+        axis.set_xlim([-2, 2])
+        axis.set_ylim([-2, 2])
+        axis.set_zlim([-2, 2])
 
     axis.set_xlabel('x')
     axis.set_ylabel('y')
     axis.set_zlabel('z')
-    axis.view_init(azim=-90., elev=-90.)
+    axis.view_init(azim=azim, elev=elev)
 
 
 def save_3d_pred(save_name,
