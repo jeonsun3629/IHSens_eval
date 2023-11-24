@@ -1,7 +1,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 import sys
 sys.path.append(".")
-sys.path.append("C:/Users/admin/MLearning/Kinectpose/demo/IK_Solver")
+
 from argparse import ArgumentParser
 from typing import Dict
 import json
@@ -9,13 +9,11 @@ import numpy as np
 import re
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from IK_Solver import *
-from IK_Solver.IK_Solver_class import *
-from IK_Solver.IK_Solver_nlink import get_nlink_chain 
+
 from utils.TrafoUtil import *
 from utils.DrawUtils import *
 from mmpose.apis.inferencers import MMPoseInferencer, get_model_aliases
-
+import os
 
 def parse_args():
     parser = ArgumentParser()
@@ -23,7 +21,7 @@ def parse_args():
         'inputs',
         type=str,
         nargs='?',
-        default = './tests/data/kinect/color/3_00003847.png',
+        default = './tests/data/kinect/color/1_00000003.png',
         help='Input image/video path or folder path.')
     parser.add_argument(
         '--pose2d',
@@ -219,11 +217,18 @@ LIMBS_MMPOSE = np.array([[8, 11], [11, 12], [12, 13],  # right arm
                          [8, 1], [1, 2], [2, 3],  # left leg
                          [8, 9], [9, 10]])  # head
 
-LIMBS_KINECT = np.array([[20, 3], [12, 20], [20, 16], # head
+# LIMBS_KINECT = np.array([[20, 3], [12, 20], [20, 16], # head
+#                          [20, 8], [8, 9], [9, 10], # right arm
+#                          [20, 4], [4, 5], [5, 6], # left arm
+#                          [16, 17], [17, 18], # right leg
+#                          [12, 13], [13, 14]]) # left leg
+
+LIMBS_KINECT = np.array([[20, 2], [2, 3], # head
                          [20, 8], [8, 9], [9, 10], # right arm
                          [20, 4], [4, 5], [5, 6], # left arm
-                         [16, 17], [17, 18], # right leg
-                         [12, 13], [13, 14]]) # left leg
+                         [20, 16], [16, 17], [17, 18], # right leg
+                         [20, 12], [12, 13], [13, 14]]) # left leg --> 왼쪽 다리 안나옴
+
 
 def display_model_aliases(model_aliases: Dict[str, str]) -> None:
     """Display the available model aliases and their corresponding model
@@ -312,6 +317,69 @@ def draw_limbs_3d(ax, joints, limbs, color='blue'):
                     [joints[i, 1], joints[j, 1]],
                     [joints[i, 2], joints[j, 2]], color=color)
 
+# 팔 길이 계산 함수
+def calculate_arm_length(shoulder, elbow, wrist):
+    upper_arm_length = np.linalg.norm(elbow - shoulder)
+    lower_arm_length = np.linalg.norm(wrist - elbow)
+    total_arm_length = upper_arm_length + lower_arm_length
+    return total_arm_length
+
+def calculate_joint_angles(shoulder, elbow, wrist):
+    upper_arm = elbow - shoulder
+    forearm = wrist - elbow
+    elbow_angle = np.degrees(np.arccos(np.dot(upper_arm, forearm) / (np.linalg.norm(upper_arm) * np.linalg.norm(forearm))))
+    body_orientation = np.array([0, 0, 1])
+    shoulder_angle = np.degrees(np.arccos(np.dot(upper_arm, body_orientation) / (np.linalg.norm(upper_arm) * np.linalg.norm(body_orientation))))
+    return elbow_angle, shoulder_angle
+
+def calculate_arm_data(shoulder_index, elbow_index, wrist_index, coords3d):
+    shoulder = coords3d[shoulder_index]
+    elbow = coords3d[elbow_index]
+    wrist = coords3d[wrist_index]
+    elbow_angle, shoulder_angle = calculate_joint_angles(shoulder, elbow, wrist)
+    arm_length = calculate_arm_length(shoulder, elbow, wrist)
+    return shoulder, elbow, wrist, elbow_angle, shoulder_angle, arm_length
+
+# 팔꿈치 위치 예측 함수
+def predict_elbow_position(shoulder, wrist, upper_arm_length):
+    # 어깨와 손목 사이의 벡터를 계산합니다.
+    arm_vector = wrist - shoulder
+    # 벡터를 정규화하여 단위 벡터를 얻습니다.
+    arm_direction = arm_vector / np.linalg.norm(arm_vector)
+    # 어깨에서 팔꿈치까지의 예상 위치를 계산합니다.
+    elbow_position = shoulder + arm_direction * upper_arm_length
+    return elbow_position
+
+def calculate_ik_data(coords3d):
+    left_data = calculate_arm_data(4, 5, 6, coords3d)
+    right_data = calculate_arm_data(8, 9, 10, coords3d)
+    
+    return {
+        "left_arm": {
+            "shoulder": left_data[0],
+            "elbow": left_data[1],
+            "wrist": left_data[2],
+            "elbow_angle": left_data[3],
+            "shoulder_angle": left_data[4],
+            "arm_length": left_data[5]
+        },
+        "right_arm": {
+            "shoulder": right_data[0],
+            "elbow": right_data[1],
+            "wrist": right_data[2],
+            "elbow_angle": right_data[3],
+            "shoulder_angle": right_data[4],
+            "arm_length": right_data[5]
+        }
+    }
+
+def reconstruct_arm_joints(shoulder, elbow_angle, shoulder_angle, arm_length):
+    upper_arm_length = arm_length / 2
+    lower_arm_length = arm_length / 2
+    elbow = np.array([shoulder[0] + upper_arm_length * np.sin(np.radians(shoulder_angle)), shoulder[1], shoulder[2] + upper_arm_length * np.cos(np.radians(shoulder_angle))])
+    wrist = np.array([elbow[0] + lower_arm_length * np.sin(np.radians(elbow_angle)), elbow[1], elbow[2] + lower_arm_length * np.cos(np.radians(elbow_angle))])
+    return np.array([shoulder, elbow, wrist])
+
 def visualize_combined_results(image_path, pred_mmpose, anno_data, pred_sdk, frame_id, vis_out_dir):
     # 이미지 로드
     image = plt.imread(image_path)
@@ -338,12 +406,29 @@ def visualize_combined_results(image_path, pred_mmpose, anno_data, pred_sdk, fra
     vis_selected[no_selected_joints] = 0
     # Figure 및 Axes 설정
     # fig, ax = plt.subplots(1, 4, figsize=(15, 5))  # 3개의 서브플롯 생성
-    fig = plt.figure(figsize=(15, 5))
+    fig = plt.figure(figsize=(20, 10))
     ax = []
     ax.append(fig.add_subplot(1, 4, 1))
     ax.append(fig.add_subplot(1, 4, 2, projection='3d'))
     ax.append(fig.add_subplot(1, 4, 3, projection='3d'))
     ax.append(fig.add_subplot(1, 4, 4, projection='3d'))
+    
+    # 머리 관절 인덱스 설정
+    gt_head_index = 0 # GT 데이터에서 머리 관절의 인덱스
+    mmpose_head_index = 10 # MMPose 데이터에서 머리 관절의 인덱스
+    kinect_head_index = 3 # Kinect 데이터에서 머리 관절의 인덱스
+
+    # GT 데이터의 머리 관절 좌표로 조정
+    gt_head_coord = gt_coords3d[gt_head_index]
+    gt_coords3d -= gt_head_coord
+
+    # MMPose 데이터의 머리 관절 좌표로 조정
+    mmpose_head_coord = mmpose_coords3d_pred[mmpose_head_index]
+    mmpose_coords3d_pred -= mmpose_head_coord
+
+    # Kinect 데이터의 머리 관절 좌표로 조정
+    kinect_head_coord = kinect_coords3d_pred[kinect_head_index]
+    kinect_coords3d_pred -= kinect_head_coord
 
     # 첫 번째 서브플롯에 2D 이미지 표시
     # ax[0] = fig.add_subplot(1, 4, 1)
@@ -353,92 +438,81 @@ def visualize_combined_results(image_path, pred_mmpose, anno_data, pred_sdk, fra
 
     # 두 번째 서브플롯에 3D GT(kinect) 포즈 추정 결과 표시
     # ax[1] = fig.add_subplot(1, 4, 2, projection='3d')
-    gt_coords3d = gt_coords3d - gt_coords3d[1] # Rotation 기준점
-    gt_coords3d = rotate_joints_y(gt_coords3d, 90)
+    gt_coords3d = gt_coords3d - gt_coords3d[0] # Rotation 기준점
+    gt_coords3d = rotate_joints_y(gt_coords3d, 0)
     ax[1].scatter(gt_coords3d[:13, 0], gt_coords3d[:13, 1], gt_coords3d[:13, 2], s=6)
     draw_person_limbs_3d_coco(ax[1], gt_coords3d, LIMBS_COCO ,color='blue')
     for idx, coord in enumerate(gt_coords3d):
-        ax[1].text(coord[0], coord[1], coord[2], f'{idx}', color='blue', fontsize=8)
+        ax[1].text(coord[0], coord[1], coord[2], f'{idx}', color='black', fontsize=8)
     ax[1].set_title('3D GT')
     ax[1].axis('on')
 
     # 세 번째 서브플롯에 MMPose 3D 포즈 추정 결과 표시
     # ax[2] = fig.add_subplot(1, 4, 3, projection='3d')
-    mmpose_coords3d_pred = mmpose_coords3d_pred - mmpose_coords3d_pred[8] # Rotation 기준점
+    mmpose_coords3d_pred = mmpose_coords3d_pred - mmpose_coords3d_pred[10] # Rotation 기준점
     mmpose_coords3d_pred = rotate_joints_y(mmpose_coords3d_pred, 180)
-    mmpose_coords3d_pred = rotate_joints_z(mmpose_coords3d_pred, 0)
+    mmpose_coords3d_pred = rotate_joints_z(mmpose_coords3d_pred, 90)
     mmpose_coords3d_pred = rotate_joints_x(mmpose_coords3d_pred, 90)
+    ax[2].scatter(mmpose_coords3d_pred[:, 0], mmpose_coords3d_pred[:, 1], mmpose_coords3d_pred[:, 2], s=6)
     draw_person_limbs_3d_coco(ax[2], mmpose_coords3d_pred, LIMBS_MMPOSE ,color='green', with_face=True)
     for idx, coord in enumerate(mmpose_coords3d_pred):
-        ax[2].scatter(mmpose_coords3d_pred[:, 0], mmpose_coords3d_pred[:, 1], mmpose_coords3d_pred[:, 2], s=6)
-        ax[2].text(coord[0], coord[1], coord[2], f'{idx}', color='green', fontsize=8)
+        ax[2].text(coord[0], coord[1], coord[2], f'{idx}', color='black', fontsize=8)
     ax[2].set_title('MMPose 3D Estimation')
     ax[2].axis('on')
 
-    # 네 번째 서브플롯에 Kinect SDK 3D 포즈 예측 결과 표시
-    # ax[3] = fig.add_subplot(1, 4, 4, projection='3d')
-    kinect_coords3d_pred = rotate_joints_y(kinect_coords3d_pred, 0)
-    kinect_coords3d_pred = rotate_joints_z(kinect_coords3d_pred, 0)
-    kinect_coords3d_pred = rotate_joints_x(kinect_coords3d_pred, 0)
-    for idx, coord in enumerate(kinect_coords3d_pred):
-        if vis_selected[idx] == 1:
-            ax[3].scatter(kinect_coords3d_pred[idx, 0], kinect_coords3d_pred[idx, 1], kinect_coords3d_pred[idx, 2], s=10)
-            ax[3].text(coord[0], coord[1], coord[2], f'{idx}', color='red', fontsize=8)
-    draw_person_limbs_3d_coco(ax[3], kinect_coords3d_pred, LIMBS_KINECT, vis=vis_selected, color='red', with_face=True)
-    ax[3].set_title('Kinect SDK 3D Prediction')
-    ax[3].axis('on')
-
-    # 다섯 번째 서브플롯에 IHSens 포즈 예측 결과 표시
-    # ax[3] = fig.add_subplot(1, 4, 4, projection='3d')
-    # IK_Solver 인스턴스 생성 (예시)
-    replace_joints = [0, 4, 7]
-
-    IKmethod = 0  # selected IK solver method
-    Plot3D   = 0  # plot in 3D flag
-
-    (a, u, q0, qmin, qmax, dqlim) = get_nlink_chain(Plot3D) 
-    # IK_Solver 인스턴스 생성
-    ik_solver = IK_Solver(Plot3D, IKmethod, a, u, q0, qmin, qmax, dqlim)
-
-    # 각 관절에 대한 처리
-    for joint_index in replace_joints:
-        joint_position = kinect_coords3d_pred[joint_index]
-        ik_solver.set_target_pos(joint_position[0], joint_position[1], joint_position[2])
-        
-        # 여기에서 'update', 'solve', 'compute' 등 올바른 메서드를 호출합니다.
-        # 예: ik_solver.solve()
-
-        # 계산된 관절 위치 가져오기
-        joint_positions = ik_solver.get_joint_positions()
-        
-        # 결과 시각화
-        for position in joint_positions:
-            ax[3].scatter(position.x, position.y, position.z, s=6)
-            ax[3].text(position.x, position.y, position.z, f'{joint_index}', fontsize=8, color='red')
-
-    # Kinect SDK 좌표와 계산된 관절 위치로 인체 구조 그리기
-    draw_person_limbs_3d_coco(ax[3], kinect_coords3d_pred, LIMBS_KINECT, vis=vis_selected, color='red', with_face=True)
-    ax[3].set_title('IHSens Prediction')
-    ax[3].axis('on')
-    # replace_joints = [0, 4, 7]
-    # for joint_index in replace_joints:
-    #     kinect_coords3d_pred[joint_index] = gt_coords3d[joint_index]
+    # # 네 번째 서브플롯에 Kinect SDK 3D 포즈 예측 결과 표시
+    # # ax[3] = fig.add_subplot(1, 4, 4, projection='3d')
+    # kinect_coords3d_pred = kinect_coords3d_pred - kinect_coords3d_pred[3]
     # kinect_coords3d_pred = rotate_joints_y(kinect_coords3d_pred, 0)
     # kinect_coords3d_pred = rotate_joints_z(kinect_coords3d_pred, 0)
     # kinect_coords3d_pred = rotate_joints_x(kinect_coords3d_pred, 0)
     # for idx, coord in enumerate(kinect_coords3d_pred):
     #     if vis_selected[idx] == 1:
-    #         ax[3].scatter(coord[0], coord[1], coord[2], s=6)
+    #         ax[3].scatter(kinect_coords3d_pred[idx, 0], kinect_coords3d_pred[idx, 1], kinect_coords3d_pred[idx, 2], s=10)
     #         ax[3].text(coord[0], coord[1], coord[2], f'{idx}', color='red', fontsize=8)
     # draw_person_limbs_3d_coco(ax[3], kinect_coords3d_pred, LIMBS_KINECT, vis=vis_selected, color='red', with_face=True)
-    # ax[3].set_title('IHSens Prediction')
+    # ax[3].set_title('Kinect SDK 3D Prediction')
     # ax[3].axis('on')
-    
-    # # 결과를 PNG 파일로 저장
-    # #plt.show()
+
+    # 네 번째 서브플롯에 IHSens 포즈 예측 결과 표시
+    kinect_coords3d_pred = kinect_coords3d_pred - kinect_coords3d_pred[3]
+    kinect_coords3d_pred = rotate_joints_y(kinect_coords3d_pred, 0)
+    kinect_coords3d_pred = rotate_joints_z(kinect_coords3d_pred, 0)
+    kinect_coords3d_pred = rotate_joints_x(kinect_coords3d_pred, 0)
+    ax[3].scatter(kinect_coords3d_pred[:13, 0], kinect_coords3d_pred[:13, 1], kinect_coords3d_pred[:13, 2], s=5)
+    draw_person_limbs_3d_coco(ax[3], kinect_coords3d_pred, LIMBS_KINECT, color='grey')
+    for idx, coord in enumerate(kinect_coords3d_pred[:13]):
+        ax[3].text(coord[0], coord[1], coord[2], f'{idx}', color='black', fontsize=8)
+
+    # IK 데이터 계산 및 예측된 팔꿈치 위치 시각화
+    ik_data = calculate_ik_data(kinect_coords3d_pred)
+    left_elbow_predicted = predict_elbow_position(ik_data["left_arm"]["shoulder"], ik_data["left_arm"]["wrist"], ik_data["left_arm"]["arm_length"] / 2)
+    right_elbow_predicted = predict_elbow_position(ik_data["right_arm"]["shoulder"], ik_data["right_arm"]["wrist"], ik_data["right_arm"]["arm_length"] / 2)
+    ax[3].scatter(left_elbow_predicted[0], left_elbow_predicted[1], left_elbow_predicted[2], s=13, color='red', label='Predicted Left Elbow')
+    ax[3].scatter(right_elbow_predicted[0], right_elbow_predicted[1], right_elbow_predicted[2], s=13, color='blue', label='Predicted Right Elbow')
+
+    # IHSens 포즈 예측 결과 표시
+    joint_labels = ['Head', 'Left Shoulder', 'Left Wrist', 'Right Shoulder', 'Right Wrist']
+    joint_indices = [3, 6, 4, 10, 8] # 머리, 왼손목, 왼어깨, 오른손목, 오른어깨
+    joint_colors = ['black', 'green', 'green', 'blue', 'blue']
+    for label, idx, color in zip(joint_labels, joint_indices, joint_colors):
+        ax[3].scatter(kinect_coords3d_pred[idx, 0], kinect_coords3d_pred[idx, 1], kinect_coords3d_pred[idx, 2], s=8, color=color, label=label)
+        ax[3].text(kinect_coords3d_pred[idx, 0], kinect_coords3d_pred[idx, 1], kinect_coords3d_pred[idx, 2], f'{idx}', color='red', fontsize=8)
+
+    ax[3].set_title('3D predicted + IK')
+    ax[3].axis('on')
+    # ax[4].legend(loc='upper right')
+
+    # 예시: gt_coords3d는 실제 3D 좌표 데이터를 포함해야 합니다.
+    ik_data = calculate_ik_data(kinect_coords3d_pred)
+    print(ik_data)
+
+    # 결과를 PNG 파일로 저장
+    plt.show()
     # plt.tight_layout()
     # plt.savefig(f'{vis_out_dir}/combined_frame_{frame_id}.png')
     # plt.close(fig)
+
 
 def rotate_joints_z(joints, theta):
         # Convert angle from degrees to radians
